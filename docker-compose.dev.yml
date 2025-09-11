@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: clustering_db_dev
+    environment:
+      POSTGRES_DB: clustering_db
+      POSTGRES_USER: cluster_user
+      POSTGRES_PASSWORD: cluster_pass
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data_dev:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - clustering_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cluster_user -d clustering_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend API - Development with hot reload
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: clustering_api_dev
+    environment:
+      DATABASE_URL: postgresql://cluster_user:cluster_pass@db:5432/clustering_db
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      ENVIRONMENT: development
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - clustering_uploads_dev:/app/uploads
+    networks:
+      - clustering_network
+    depends_on:
+      db:
+        condition: service_healthy
+    command: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend (React App) - Development with hot reload
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: clustering_frontend_dev
+    environment:
+      REACT_APP_API_URL: http://localhost:8000
+      REACT_APP_WS_URL: ws://localhost:8000
+      NODE_ENV: development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - clustering_network
+    depends_on:
+      - api
+    profiles:
+      - frontend
+
+  # Redis for caching (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: clustering_redis_dev
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - clustering_network
+    command: redis-server --appendonly yes
+    profiles:
+      - cache
+
+volumes:
+  postgres_data_dev:
+    driver: local
+  redis_data_dev:
+    driver: local
+  clustering_uploads_dev:
+    driver: local
+
+networks:
+  clustering_network:
+    driver: bridge
